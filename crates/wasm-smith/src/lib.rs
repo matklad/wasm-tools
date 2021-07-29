@@ -173,6 +173,7 @@ where
     /// hence the optional index type. All defined functions in this module,
     /// however, will have an index type specified.
     funcs: Vec<(Option<u32>, Rc<FuncType>)>,
+    main_func: u32,
 
     /// All tables available to this module, sorted by their index. The list
     /// entry is the type of each table.
@@ -238,6 +239,7 @@ impl<C: Config> ConfiguredModule<C> {
             num_defined_memories: 0,
             defined_globals: Vec::new(),
             funcs: Vec::new(),
+            main_func: 0,
             tables: Vec::new(),
             globals: Vec::new(),
             memories: Vec::new(),
@@ -1013,6 +1015,24 @@ where
         // succeed.
         let section_idx = self.initial_sections.len();
         self.initial_sections.push(InitialSection::Type(Vec::new()));
+
+        {
+            let ty = Type::Func(Rc::new(FuncType {
+                params: vec![],
+                results: vec![],
+            }));
+            self.record_type(&ty);
+            let types = match self.initial_sections.last_mut().unwrap() {
+                InitialSection::Type(list) => list,
+                _ => unreachable!(),
+            };
+            self.types.push(LocalType::Defined {
+                section: section_idx,
+                nth: types.len(),
+            });
+            types.push(ty);
+        }
+
         arbitrary_loop(u, min, self.config.max_types() - self.types.len(), |u| {
             let ty = self.arbitrary_type(u)?;
             self.record_type(&ty);
@@ -1782,6 +1802,12 @@ where
             return Ok(());
         }
 
+        let max = self.func_types.len() - 1;
+        let ty = self.func_types[0];
+        self.main_func = self.funcs.len() as u32;
+        self.funcs.push((Some(ty), self.func_type(ty).clone()));
+        self.num_defined_funcs += 1;
+
         arbitrary_loop(u, self.config.min_funcs(), self.config.max_funcs(), |u| {
             if !self.can_add_local_or_import_func() {
                 return Ok(false);
@@ -1791,7 +1817,8 @@ where
             self.funcs.push((Some(ty), self.func_type(ty).clone()));
             self.num_defined_funcs += 1;
             Ok(true)
-        })
+        })?;
+        Ok(())
     }
 
     fn arbitrary_tables(&mut self, u: &mut Unstructured) -> Result<()> {
@@ -1928,6 +1955,15 @@ where
         );
 
         let mut export_names = HashSet::new();
+        // Pick a name, then pick the export, and then we can record
+        // information about the chosen export.
+        let name = "main".to_string();
+        let list = u.choose(&choices)?;
+        let export = &Export::Func(self.main_func);
+        let ty = self.type_of(export);
+        self.type_size += 1 + ty.size();
+        self.exports.push((name, *export));
+
         arbitrary_loop(
             u,
             self.config.min_exports(),
